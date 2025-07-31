@@ -327,9 +327,12 @@ def ask_cartridge_inline(chat_id):
         else:
             markup.row(buttons[i])
 
-    markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
+    markup.row(
+        InlineKeyboardButton("⬅️ Назад", callback_data="back_to_type"),
+        InlineKeyboardButton("❌ Отмена", callback_data="cancel")
+    )
 
-    bot.send_message(chat_id, "Выберите картридж:", reply_markup=markup)
+    bot.send_message(chat_id, "📦 Шаг 2 из 4: Выберите картридж:", reply_markup=markup)
 
 
 
@@ -363,9 +366,12 @@ def ask_quantity_inline(chat_id):
 
         markup.add(InlineKeyboardButton(q, callback_data=f"qty_{q}"))
 
-    markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
+    markup.row(
+        InlineKeyboardButton("⬅️ Назад", callback_data="back_to_cartridge"),
+        InlineKeyboardButton("❌ Отмена", callback_data="cancel")
+    )
 
-    bot.send_message(chat_id, f"Картридж: {user_data[chat_id]['cartridge']}\nВыберите количество:", reply_markup=markup)
+    bot.send_message(chat_id, f"📦 Шаг 3 из 4: Картридж: {user_data[chat_id]['cartridge']}\nВыберите количество:", reply_markup=markup)
 
 
 
@@ -399,9 +405,20 @@ def ask_city_inline(chat_id):
 
         markup.add(InlineKeyboardButton(city, callback_data=f"city_{city}"))
 
-    markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
+    # Определяем откуда пришли для кнопки Назад
+    if user_data[chat_id].get("type") == "📦 Заказ картриджей":
+        back_callback = "back_to_quantity"
+        step_info = "📦 Шаг 4 из 4: "
+    else:
+        back_callback = "back_to_problem"
+        step_info = "🔧 Шаг 3 из 3: "
+    
+    markup.row(
+        InlineKeyboardButton("⬅️ Назад", callback_data=back_callback),
+        InlineKeyboardButton("❌ Отмена", callback_data="cancel")
+    )
 
-    bot.send_message(chat_id, "Выберите город:", reply_markup=markup)
+    bot.send_message(chat_id, f"{step_info}Выберите город:", reply_markup=markup)
 
 
 
@@ -471,6 +488,52 @@ def handle_cancel_inline(call: CallbackQuery):
 
     start_flow(chat_id)
 
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("back_"))
+
+def handle_back_navigation(call: CallbackQuery):
+    """Обработчик кнопок Назад"""
+    chat_id = call.message.chat.id
+    back_to = call.data.split("back_")[1]
+    
+    if back_to == "to_type":
+        # Возврат к выбору типа заявки
+        user_data[chat_id]["step"] = "start"
+        bot.edit_message_text("🔄 Возврат к выбору типа заявки", chat_id, call.message.message_id)
+        show_type_selection(chat_id, include_welcome=False)
+        
+    elif back_to == "to_cartridge":
+        # Возврат к выбору картриджа
+        user_data[chat_id]["step"] = "cartridge"
+        bot.edit_message_text("🔄 Возврат к выбору картриджа", chat_id, call.message.message_id)
+        ask_cartridge_inline(chat_id)
+        
+    elif back_to == "to_quantity":
+        # Возврат к выбору количества
+        user_data[chat_id]["step"] = "quantity"
+        bot.edit_message_text("🔄 Возврат к выбору количества", chat_id, call.message.message_id)
+        ask_quantity_inline(chat_id)
+        
+    elif back_to == "to_equipment":
+        # Возврат к выбору оборудования
+        user_data[chat_id]["step"] = "equipment"
+        bot.edit_message_text("🔄 Возврат к выбору оборудования", chat_id, call.message.message_id)
+        ask_equipment_inline(chat_id)
+        
+    elif back_to == "to_problem":
+        # Возврат к выбору проблемы
+        user_data[chat_id]["step"] = "problem"
+        bot.edit_message_text("🔄 Возврат к выбору проблемы", chat_id, call.message.message_id)
+        ask_problem_inline(chat_id)
+        
+    elif back_to == "to_city":
+        # Возврат к выбору города
+        user_data[chat_id]["step"] = "city"
+        bot.edit_message_text("🔄 Возврат к выбору города", chat_id, call.message.message_id)
+        ask_city_inline(chat_id)
+    
     bot.answer_callback_query(call.id)
 
 
@@ -742,6 +805,42 @@ def save_request_to_file(request_data, status='new', req_id=None):
         logging.error(f"Ошибка сохранения заявки в файл: {e}")
 
 
+
+def show_request_preview(chat_id):
+    """Показывает предпросмотр заявки перед отправкой"""
+    try:
+        data = user_data[chat_id]
+        typ = data['type']
+        
+        # Формируем предпросмотр
+        preview = f"📋 *Предпросмотр заявки*\n\n"
+        preview += f"🎯 **Тип:** {typ}\n"
+        
+        if typ == "📦 Заказ картриджей":
+            preview += f"🖨️ **Картридж:** {data['cartridge']}\n"
+            preview += f"📦 **Количество:** {data['quantity']}\n"
+        else:
+            preview += f"💻 **Оборудование:** {data['equipment']}\n"
+            preview += f"⚠️ **Проблема:** {data['problem']}\n"
+        
+        preview += f"🏢 **Подразделение:** {data['branch']}\n"
+        preview += f"📅 **Дата:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        
+        markup = InlineKeyboardMarkup()
+        markup.row(
+            InlineKeyboardButton("✅ Отправить заявку", callback_data="confirm_request"),
+            InlineKeyboardButton("✏️ Редактировать", callback_data="edit_request")
+        )
+        markup.row(
+            InlineKeyboardButton("⬅️ Назад", callback_data="back_to_city"),
+            InlineKeyboardButton("❌ Отмена", callback_data="cancel")
+        )
+        
+        bot.send_message(chat_id, preview, reply_markup=markup, parse_mode='Markdown')
+        
+    except Exception as e:
+        logging.error(f"Ошибка показа предпросмотра: {e}")
+        bot.send_message(chat_id, "❌ Ошибка при создании предпросмотра. Попробуйте еще раз.")
 
 def finalize_request(chat_id):
 
