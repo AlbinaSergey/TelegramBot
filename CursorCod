@@ -19,13 +19,68 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+import functools
+import traceback
 
 
+
+# Декораторы для обработки ошибок
+def error_handler(func):
+    """Декоратор для обработки ошибок в функциях бота"""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            error_msg = f"Ошибка в функции {func.__name__}: {str(e)}"
+            logging.error(f"{error_msg}\n{traceback.format_exc()}")
+            
+            # Пытаемся найти chat_id для отправки уведомления пользователю
+            chat_id = None
+            if args:
+                if hasattr(args[0], 'chat'):
+                    chat_id = args[0].chat.id
+                elif hasattr(args[0], 'message'):
+                    chat_id = args[0].message.chat.id
+                elif isinstance(args[0], (int, str)):
+                    try:
+                        chat_id = int(args[0])
+                    except (ValueError, TypeError):
+                        pass
+            
+            if chat_id:
+                try:
+                    bot.send_message(chat_id, "❌ Произошла ошибка. Попробуйте еще раз или обратитесь к администратору.")
+                except Exception as send_error:
+                    logging.error(f"Не удалось отправить сообщение об ошибке: {send_error}")
+            
+            return None
+    return wrapper
+
+def safe_bot_operation(operation_name="Операция"):
+    """Декоратор для безопасных операций с Telegram API"""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except telebot.apihelper.ApiTelegramException as e:
+                logging.error(f"Telegram API ошибка в {operation_name}: {e}")
+                if e.error_code == 403:
+                    logging.warning(f"Бот заблокирован пользователем или в чате")
+                elif e.error_code == 429:
+                    logging.warning(f"Превышен лимит запросов, ожидание...")
+                    time.sleep(1)
+                    return func(*args, **kwargs)  # Повторная попытка
+                return None
+            except Exception as e:
+                logging.error(f"Неожиданная ошибка в {operation_name}: {e}\n{traceback.format_exc()}")
+                return None
+        return wrapper
+    return decorator
 
 # Конфигурация
-
 TOKEN = '8290189832:AAFsaDcb2cxWRrbZKzgIBl4I6LE2hDd3tyk'
-
 ADMIN_ID = 541707424
 
 
