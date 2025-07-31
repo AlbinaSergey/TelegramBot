@@ -21,8 +21,96 @@ from openpyxl.utils import get_column_letter
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 import functools
 import traceback
+import threading
+import asyncio
+from collections import defaultdict
+import weakref
+from concurrent.futures import ThreadPoolExecutor
 
 
+
+# Система кэширования для улучшения производительности
+class PerformanceCache:
+    """Класс для кэширования данных и улучшения производительности"""
+    
+    def __init__(self):
+        self.cache = {}
+        self.cache_timestamps = {}
+        self.cache_lock = threading.RLock()
+        self.request_stats = defaultdict(int)
+        self.response_times = defaultdict(list)
+        self.max_cache_size = 1000
+        self.cache_ttl = 300  # 5 минут
+        
+    def get(self, key):
+        """Получить значение из кэша"""
+        with self.cache_lock:
+            if key in self.cache:
+                # Проверяем TTL
+                if time.time() - self.cache_timestamps[key] < self.cache_ttl:
+                    return self.cache[key]
+                else:
+                    # Удаляем устаревшие данные
+                    del self.cache[key]
+                    del self.cache_timestamps[key]
+            return None
+    
+    def set(self, key, value):
+        """Установить значение в кэш"""
+        with self.cache_lock:
+            # Очищаем кэш если он переполнен
+            if len(self.cache) >= self.max_cache_size:
+                self._evict_oldest()
+            
+            self.cache[key] = value
+            self.cache_timestamps[key] = time.time()
+    
+    def _evict_oldest(self):
+        """Удалить самые старые записи из кэша"""
+        if not self.cache_timestamps:
+            return
+            
+        # Удаляем 20% самых старых записей
+        sorted_keys = sorted(self.cache_timestamps.items(), key=lambda x: x[1])
+        evict_count = max(1, len(sorted_keys) // 5)
+        
+        for key, _ in sorted_keys[:evict_count]:
+            del self.cache[key]
+            del self.cache_timestamps[key]
+    
+    def clear(self):
+        """Очистить весь кэш"""
+        with self.cache_lock:
+            self.cache.clear()
+            self.cache_timestamps.clear()
+    
+    def record_request(self, endpoint, response_time):
+        """Записать статистику запроса"""
+        self.request_stats[endpoint] += 1
+        self.response_times[endpoint].append(response_time)
+        
+        # Ограничиваем размер списка времени ответа
+        if len(self.response_times[endpoint]) > 100:
+            self.response_times[endpoint] = self.response_times[endpoint][-50:]
+    
+    def get_stats(self):
+        """Получить статистику производительности"""
+        stats = {}
+        for endpoint, times in self.response_times.items():
+            if times:
+                stats[endpoint] = {
+                    'requests': self.request_stats[endpoint],
+                    'avg_time': sum(times) / len(times),
+                    'min_time': min(times),
+                    'max_time': max(times)
+                }
+        return stats
+
+# Глобальный экземпляр кэша
+performance_cache = PerformanceCache()
+
+# Thread pool для асинхронных операций
+thread_pool = ThreadPoolExecutor(max_workers=4)
 
 # Декораторы для обработки ошибок
 def error_handler(func):
@@ -78,6 +166,66 @@ def safe_bot_operation(operation_name="Операция"):
                 return None
         return wrapper
     return decorator
+
+def cache_result(ttl=300, key_func=None):
+    """Декоратор для кэширования результатов функций"""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            # Генерируем ключ кэша
+            if key_func:
+                cache_key = key_func(*args, **kwargs)
+            else:
+                cache_key = f"{func.__name__}_{hash(str(args))}{hash(str(kwargs))}"
+            
+            # Пытаемся получить из кэша
+            cached_result = performance_cache.get(cache_key)
+            if cached_result is not None:
+                return cached_result
+            
+            # Выполняем функцию и кэшируем результат
+            start_time = time.time()
+            result = func(*args, **kwargs)
+            end_time = time.time()
+            
+            # Записываем статистику
+            performance_cache.record_request(func.__name__, end_time - start_time)
+            
+            # Кэшируем результат
+            performance_cache.set(cache_key, result)
+            
+            return result
+        return wrapper
+    return decorator
+
+def measure_performance(func):
+    """Декоратор для измерения производительности функций"""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        try:
+            result = func(*args, **kwargs)
+            return result
+        finally:
+            end_time = time.time()
+            performance_cache.record_request(func.__name__, end_time - start_time)
+    return wrapper
+
+def async_operation(func):
+    """Декоратор для выполнения операций в отдельном потоке"""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        def run_async():
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                logging.error(f"Ошибка в асинхронной операции {func.__name__}: {e}")
+                return None
+        
+        # Выполняем в thread pool если операция может быть долгой
+        future = thread_pool.submit(run_async)
+        return future.result(timeout=30)  # Таймаут 30 секунд
+    return wrapper
 
 # Конфигурация
 TOKEN = '8290189832:AAFsaDcb2cxWRrbZKzgIBl4I6LE2hDd3tyk'
@@ -207,6 +355,7 @@ bot_running = False
 
 
 
+@measure_performance
 def generate_request_id():
 
     """Генерирует уникальный ID заявки"""
@@ -670,6 +819,8 @@ def ask_subbranch(chat_id, city):
 
 
 
+@async_operation
+@measure_performance  
 def save_request_to_excel(req_id, status, request_data):
 
     """Сохраняет заявку в Excel (requests.xlsx) с русскими заголовками"""
@@ -778,6 +929,8 @@ def save_request_to_excel(req_id, status, request_data):
 
 
 
+@async_operation
+@measure_performance
 def save_request_to_file(request_data, status='new', req_id=None):
 
     """Сохраняет заявку в файл, CSV и Excel"""
@@ -1164,6 +1317,8 @@ def cmd_admin(m):
 
     markup.add("📤 Экспорт заявок")
 
+    markup.add("📊 Производительность")
+
     
 
     bot.send_message(m.chat.id, "🔧 *Меню администратора*\n\nВыберите действие:", 
@@ -1173,7 +1328,8 @@ def cmd_admin(m):
 
 
 @bot.message_handler(commands=['stats'])
-
+@cache_result(ttl=60)  # Кэшируем на 1 минуту
+@measure_performance
 def cmd_stats(m):
 
     """Обработчик команды /stats - статистика"""
