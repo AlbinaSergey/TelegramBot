@@ -211,6 +211,7 @@ def show_type_selection(chat_id, include_welcome=False):
     bot.send_message(chat_id, message, reply_markup=markup)
 
 
+
 def start_flow(chat_id):
 
     """Начинает процесс создания заявки с инлайн-кнопками выбора типа"""
