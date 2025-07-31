@@ -186,13 +186,9 @@ def clear_user_data(chat_id):
 
 
 
-def start_flow(chat_id):
+def show_type_selection(chat_id, include_welcome=False):
 
-    """Начинает процесс создания заявки с инлайн-кнопками выбора типа"""
-
-    clear_user_data(chat_id)
-
-    user_data[chat_id] = {"step": "start"}
+    """Показывает меню выбора типа заявки"""
 
     markup = InlineKeyboardMarkup()
 
@@ -204,7 +200,27 @@ def start_flow(chat_id):
 
     )
 
-    bot.send_message(chat_id, "Выберите тип заявки:", reply_markup=markup)
+    if include_welcome:
+
+        message = "🤖 Бот для заявок на ремонт и заказ картриджей\n\nВыберите тип заявки:"
+
+    else:
+
+        message = "Выберите тип заявки:"
+
+    bot.send_message(chat_id, message, reply_markup=markup)
+
+
+
+def start_flow(chat_id):
+
+    """Начинает процесс создания заявки с инлайн-кнопками выбора типа"""
+
+    clear_user_data(chat_id)
+
+    user_data[chat_id] = {"step": "start"}
+
+    show_type_selection(chat_id, include_welcome=True)
 
 
 
@@ -246,9 +262,15 @@ def ask_cartridge_inline(chat_id):
 
     markup = InlineKeyboardMarkup(row_width=2)
 
-    for c in CARTRIDGES:
-
-        markup.add(InlineKeyboardButton(c, callback_data=f"cartridge_{c}"))
+    # Добавляем кнопки картриджей по 2 в ряду для центрирования
+    buttons = [InlineKeyboardButton(c, callback_data=f"cartridge_{c}") for c in CARTRIDGES]
+    
+    # Группируем кнопки по 2
+    for i in range(0, len(buttons), 2):
+        if i + 1 < len(buttons):
+            markup.row(buttons[i], buttons[i + 1])
+        else:
+            markup.row(buttons[i])
 
     markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
 
@@ -899,8 +921,6 @@ def notify_user_about_status(req_id, new_status):
 def cmd_start(m):
 
     """Обработчик команды /start"""
-
-    bot.send_message(m.chat.id, "🤖 Бот для заявок на ремонт и заказ картриджей\n\nВыберите тип заявки:")
 
     start_flow(m.chat.id)
 
@@ -1736,7 +1756,7 @@ def main_handler(m):
 
             bot.send_message(chat_id, "Пожалуйста, выберите тип заявки кнопкой.")
 
-            start_flow(chat_id)
+            show_type_selection(chat_id, include_welcome=False)
 
     
 
