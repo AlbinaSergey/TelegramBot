@@ -1,0 +1,1941 @@
+# -*- coding: utf-8 -*-
+
+import telebot
+
+import logging
+
+import time
+
+from datetime import datetime
+
+import os
+
+from telebot import types
+
+import csv
+
+from openpyxl import Workbook, load_workbook
+
+from openpyxl.utils import get_column_letter
+
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+
+
+
+# Конфигурация
+
+TOKEN = '8290189832:AAFsaDcb2cxWRrbZKzgIBl4I6LE2hDd3tyk'
+
+ADMIN_ID = 541707424
+
+
+
+# Настройка логирования
+
+logging.basicConfig(
+
+    format="%(asctime)s %(levelname)s %(message)s", 
+
+    level=logging.INFO,
+
+    handlers=[
+
+        logging.FileHandler('bot.log', encoding='utf-8'),
+
+        logging.StreamHandler()
+
+    ]
+
+)
+
+telebot.logger.setLevel(logging.INFO)
+
+
+
+# Данные
+
+CARTRIDGES = [
+
+    "CE285", "CE278", "CB435", "CB436", "Q2612", "Q5949", "Q7553",
+
+    "CF283", "106R03623", "101R00555", "CE505", "B235000", "D115L",
+
+    "TL-420", "DL-420", "TK-475", "E30"
+
+]
+
+
+
+QUANTITIES = [f"{n} шт" for n in range(1, 31)]
+
+
+
+CITIES = {
+
+    "Ханты‑Мансийск": [
+
+        "Ханты‑Мансийск — медико‑криминалистическая экспертиза",
+
+        "Ханты‑Мансийск — материалы дела",
+
+        "Ханты‑Мансийск — биология и цитология",
+
+        "Ханты‑Мансийск — гистология",
+
+        "Ханты‑Мансийск — генетическая экспертиза",
+
+        "Ханты‑Мансийск — химико‑токсикологическая экспертиза",
+
+        "Аппарат управления",
+
+        "Бухгалтерия",
+
+        "Кадрово‑организационный отдел",
+
+        "Контрактная служба",
+
+        "Организационно‑методический отдел",
+
+        "Отдел материально‑технического снабжения",
+
+        "Отдел по защите информации",
+
+        "Планово‑экономический отдел",
+
+        "Юридический отдел"
+
+    ],
+
+    "Нижневартовск": [
+
+        "Нижневартовск — химико‑токсикологическая экспертиза",
+
+        "Нижневартовск — гистологическая экспертиза"
+
+    ],
+
+    "Сургут": ["Сургут — материалы дела"],
+
+    "Лангепас": [], "Радужный": [], "Приобье": [],
+
+    "Белоярский": [], "Берёзово": [], "Междуреченский": [],
+
+    "Нягань": [], "Советский": [], "Урай": [],
+
+    "Югорск": [], "Кондинское": [], "Игрим": []
+
+}
+
+
+
+EQUIP_PROBLEMS = {
+
+    "Принтер": ["Не печатает", "Замятие бумаги", "Горит ошибка", "Не включается"],
+
+    "МФУ": ["Не сканирует", "Не копирует", "Не печатает", "Не включается"],
+
+    "Компьютер": ["Не включается", "Синий экран", "Шумит", "Перезагружается"],
+
+    "Монитор": ["Не включается", "Мерцает", "Нет изображения", "Показывает искажения"]
+
+}
+
+
+
+# Инициализация бота
+
+bot = telebot.TeleBot(TOKEN)
+
+user_data = {}
+
+bot_running = False
+
+
+
+def generate_request_id():
+
+    """Генерирует уникальный ID заявки"""
+
+    counter_file = "counter.txt"
+
+    if not os.path.exists(counter_file):
+
+        with open(counter_file, "w") as f:
+
+            f.write("1")
+
+    with open(counter_file, "r+") as f:
+
+        current = int(f.read())
+
+        f.seek(0)
+
+        f.write(str(current + 1))
+
+    return f"REQ-{current:04d}"
+
+
+
+def clear_user_data(chat_id):
+
+    """Очищает данные пользователя"""
+
+    if chat_id in user_data:
+
+        del user_data[chat_id]
+
+
+
+def start_flow(chat_id):
+
+    """Начинает процесс создания заявки с инлайн-кнопками выбора типа"""
+
+    clear_user_data(chat_id)
+
+    user_data[chat_id] = {"step": "start"}
+
+    markup = InlineKeyboardMarkup()
+
+    markup.add(
+
+        InlineKeyboardButton("📦 Заказ картриджей", callback_data="type_cartridge"),
+
+        InlineKeyboardButton("🔧 Ремонт оборудования", callback_data="type_repair")
+
+    )
+
+    bot.send_message(chat_id, "Выберите тип заявки:", reply_markup=markup)
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data in ["type_cartridge", "type_repair"])
+
+def handle_type_inline(call: CallbackQuery):
+
+    chat_id = call.message.chat.id
+
+    if call.data == "type_cartridge":
+
+        user_data[chat_id]["type"] = "📦 Заказ картриджей"
+
+        user_data[chat_id]["step"] = "cartridge"
+
+        bot.edit_message_text("Выбран тип: 📦 Заказ картриджей", chat_id, call.message.message_id)
+
+        ask_cartridge_inline(chat_id)
+
+    elif call.data == "type_repair":
+
+        user_data[chat_id]["type"] = "🔧 Ремонт оборудования"
+
+        user_data[chat_id]["step"] = "equipment"
+
+        bot.edit_message_text("Выбран тип: 🔧 Ремонт оборудования", chat_id, call.message.message_id)
+
+        ask_equipment_inline(chat_id)
+
+    bot.answer_callback_query(call.id)
+
+
+
+# Функции для следующих этапов (пример для картриджа)
+
+def ask_cartridge_inline(chat_id):
+
+    user_data[chat_id]["step"] = "cartridge"
+
+    markup = InlineKeyboardMarkup(row_width=2)
+
+    for c in CARTRIDGES:
+
+        markup.add(InlineKeyboardButton(c, callback_data=f"cartridge_{c}"))
+
+    markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
+
+    bot.send_message(chat_id, "Выберите картридж:", reply_markup=markup)
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("cartridge_"))
+
+def handle_cartridge_inline(call: CallbackQuery):
+
+    chat_id = call.message.chat.id
+
+    cartridge = call.data.split("cartridge_",1)[1]
+
+    user_data[chat_id]["cartridge"] = cartridge
+
+    user_data[chat_id]["step"] = "quantity"
+
+    bot.edit_message_text(f"Выбран картридж: {cartridge}", chat_id, call.message.message_id)
+
+    ask_quantity_inline(chat_id)
+
+    bot.answer_callback_query(call.id)
+
+
+
+def ask_quantity_inline(chat_id):
+
+    user_data[chat_id]["step"] = "quantity"
+
+    markup = InlineKeyboardMarkup(row_width=4)
+
+    for q in QUANTITIES:
+
+        markup.add(InlineKeyboardButton(q, callback_data=f"qty_{q}"))
+
+    markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
+
+    bot.send_message(chat_id, f"Картридж: {user_data[chat_id]['cartridge']}\nВыберите количество:", reply_markup=markup)
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("qty_"))
+
+def handle_quantity_inline(call: CallbackQuery):
+
+    chat_id = call.message.chat.id
+
+    qty = call.data.split("qty_",1)[1]
+
+    user_data[chat_id]["quantity"] = qty
+
+    user_data[chat_id]["step"] = "city"
+
+    bot.edit_message_text(f"Выбрано количество: {qty}", chat_id, call.message.message_id)
+
+    ask_city_inline(chat_id)
+
+    bot.answer_callback_query(call.id)
+
+
+
+def ask_city_inline(chat_id):
+
+    user_data[chat_id]["step"] = "city"
+
+    markup = InlineKeyboardMarkup(row_width=2)
+
+    for city in CITIES:
+
+        markup.add(InlineKeyboardButton(city, callback_data=f"city_{city}"))
+
+    markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
+
+    bot.send_message(chat_id, "Выберите город:", reply_markup=markup)
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("city_"))
+
+def handle_city_inline(call: CallbackQuery):
+
+    chat_id = call.message.chat.id
+
+    city = call.data.split("city_",1)[1]
+
+    user_data[chat_id]["city"] = city
+
+    subs = CITIES[city]
+
+    if subs:
+
+        user_data[chat_id]["step"] = "subbranch"
+
+        markup = InlineKeyboardMarkup(row_width=2)
+
+        for s in subs:
+
+            markup.add(InlineKeyboardButton(s, callback_data=f"sub_{s}"))
+
+        markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
+
+        bot.edit_message_text(f"Город: {city}\nВыберите подразделение:", chat_id, call.message.message_id, reply_markup=markup)
+
+    else:
+
+        user_data[chat_id]["branch"] = city
+
+        bot.edit_message_text(f"Город: {city}", chat_id, call.message.message_id)
+
+        finalize_request(chat_id)
+
+    bot.answer_callback_query(call.id)
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("sub_"))
+
+def handle_subbranch_inline(call: CallbackQuery):
+
+    chat_id = call.message.chat.id
+
+    sub = call.data.split("sub_",1)[1]
+
+    user_data[chat_id]["branch"] = sub
+
+    bot.edit_message_text(f"Подразделение: {sub}", chat_id, call.message.message_id)
+
+    finalize_request(chat_id)
+
+    bot.answer_callback_query(call.id)
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "cancel")
+
+def handle_cancel_inline(call: CallbackQuery):
+
+    chat_id = call.message.chat.id
+
+    bot.edit_message_text("Заявка отменена.", chat_id, call.message.message_id)
+
+    start_flow(chat_id)
+
+    bot.answer_callback_query(call.id)
+
+
+
+def ask_equipment_inline(chat_id):
+
+    user_data[chat_id]["step"] = "equipment"
+
+    markup = InlineKeyboardMarkup(row_width=2)
+
+    for e in EQUIP_PROBLEMS:
+
+        markup.add(InlineKeyboardButton(e, callback_data=f"equipment_{e}"))
+
+    markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
+
+    bot.send_message(chat_id, "Выберите оборудование:", reply_markup=markup)
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("equipment_"))
+
+def handle_equipment_inline(call: CallbackQuery):
+
+    chat_id = call.message.chat.id
+
+    equipment = call.data.split("equipment_",1)[1]
+
+    user_data[chat_id]["equipment"] = equipment
+
+    user_data[chat_id]["step"] = "problem"
+
+    bot.edit_message_text(f"Выбрано оборудование: {equipment}", chat_id, call.message.message_id)
+
+    ask_problem_inline(chat_id)
+
+    bot.answer_callback_query(call.id)
+
+
+
+def ask_problem_inline(chat_id):
+
+    user_data[chat_id]["step"] = "problem"
+
+    markup = InlineKeyboardMarkup(row_width=2)
+
+    for p in EQUIP_PROBLEMS[user_data[chat_id]['equipment']]:
+
+        markup.add(InlineKeyboardButton(p, callback_data=f"problem_{p}"))
+
+    markup.add(InlineKeyboardButton("Другая проблема", callback_data="custom_problem"))
+
+    markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
+
+    bot.send_message(chat_id, f"Оборудование: {user_data[chat_id]['equipment']}\nВыберите проблему:", reply_markup=markup)
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("problem_"))
+
+def handle_problem_inline(call: CallbackQuery):
+
+    chat_id = call.message.chat.id
+
+    problem = call.data.split("problem_",1)[1]
+
+    user_data[chat_id]["problem"] = problem
+
+    user_data[chat_id]["step"] = "city"
+
+    bot.edit_message_text(f"Выбрана проблема: {problem}", chat_id, call.message.message_id)
+
+    ask_city_inline(chat_id)
+
+    bot.answer_callback_query(call.id)
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "custom_problem")
+
+def handle_custom_problem_inline(call: CallbackQuery):
+
+    chat_id = call.message.chat.id
+
+    user_data[chat_id]["step"] = "custom_problem"
+
+    bot.edit_message_text("Опишите проблему вручную:", chat_id, call.message.message_id)
+
+    bot.answer_callback_query(call.id)
+
+
+
+def ask_custom_problem_inline(chat_id):
+
+    user_data[chat_id]["step"] = "custom_problem"
+
+    bot.send_message(chat_id, "Опишите проблему вручную:")
+
+
+
+def ask_city(chat_id):
+
+    """Запрашивает выбор города"""
+
+    user_data[chat_id]["step"] = "city"
+
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+
+    markup.add("❌ Отмена")
+
+    for city in CITIES:
+
+        markup.add(city)
+
+    bot.send_message(chat_id, "Выберите город:", reply_markup=markup)
+
+
+
+def ask_subbranch(chat_id, city):
+
+    """Запрашивает выбор подразделения"""
+
+    user_data[chat_id]["step"] = "subbranch"
+
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+
+    markup.add("❌ Отмена")
+
+    for s in CITIES[city]:
+
+        markup.add(s)
+
+    bot.send_message(chat_id, f"Подразделения в {city}:", reply_markup=markup)
+
+
+
+def save_request_to_excel(req_id, status, request_data):
+
+    """Сохраняет заявку в Excel (requests.xlsx) с русскими заголовками"""
+
+    headers = [
+
+        'Номер заявки', 'Статус', 'Тип', 'Картридж', 'Количество', 'Оборудование', 'Проблема', 'Город', 'Подразделение', 'Пользователь', 'Дата'
+
+    ]
+
+    filename = 'requests.xlsx'
+
+    # Парсим данные
+
+    data = {
+
+        'Номер заявки': req_id,
+
+        'Статус': status,
+
+        'Тип': '',
+
+        'Картридж': '',
+
+        'Количество': '',
+
+        'Оборудование': '',
+
+        'Проблема': '',
+
+        'Город': '',
+
+        'Подразделение': '',
+
+        'Пользователь': '',
+
+        'Дата': ''
+
+    }
+
+    # Извлекаем из summary
+
+    for line in request_data.split('\n'):
+
+        if line.startswith('Тип:'):
+
+            data['Тип'] = line.split(':',1)[1].strip()
+
+        elif line.startswith('Картридж:'):
+
+            data['Картридж'] = line.split(':',1)[1].strip()
+
+        elif line.startswith('Количество:'):
+
+            data['Количество'] = line.split(':',1)[1].strip()
+
+        elif line.startswith('Оборудование:'):
+
+            data['Оборудование'] = line.split(':',1)[1].strip()
+
+        elif line.startswith('Проблема:'):
+
+            data['Проблема'] = line.split(':',1)[1].strip()
+
+        elif line.startswith('Подразделение:'):
+
+            data['Подразделение'] = line.split(':',1)[1].strip()
+
+        elif line.startswith('Пользователь:'):
+
+            data['Пользователь'] = line.split(':',1)[1].strip()
+
+        elif line.startswith('🕒') or line.startswith('Дата:'):
+
+            data['Дата'] = line.split(':',1)[1].strip() if ':' in line else line.strip()
+
+        elif line.startswith('Город:'):
+
+            data['Город'] = line.split(':',1)[1].strip()
+
+    # Открываем или создаём файл
+
+    try:
+
+        if os.path.exists(filename):
+
+            wb = load_workbook(filename)
+
+            ws = wb.active
+
+        else:
+
+            wb = Workbook()
+
+            ws = wb.active
+
+            ws.append(headers)
+
+        ws.append([data[h] for h in headers])
+
+        wb.save(filename)
+
+    except Exception as e:
+
+        logging.error(f"Ошибка сохранения заявки в Excel: {e}")
+
+
+
+def save_request_to_file(request_data, status='new', req_id=None):
+
+    """Сохраняет заявку в файл, CSV и Excel"""
+
+    try:
+
+        with open('requests.txt', 'a', encoding='utf-8') as f:
+
+            f.write(f"{request_data}\nСтатус: {status}\n{'='*50}\n")
+
+        # Сохраняем в CSV
+
+        with open('requests.csv', 'a', encoding='utf-8', newline='') as csvfile:
+
+            writer = csv.writer(csvfile)
+
+            writer.writerow([req_id or '', status, request_data.replace('\n', ' | ')])
+
+        # Сохраняем в Excel
+
+        save_request_to_excel(req_id or '', status, request_data)
+
+    except Exception as e:
+
+        logging.error(f"Ошибка сохранения заявки в файл: {e}")
+
+
+
+def finalize_request(chat_id):
+
+    """Завершает создание заявки и отправляет её"""
+
+    try:
+
+        typ = user_data[chat_id]['type']
+
+        rid = generate_request_id()
+
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        
+
+        # Формируем сводку заявки
+
+        summary = f"✉️ *Заявка {rid}*\n🕒 {ts}\nТип: {typ}\n"
+
+        
+
+        if typ == "📦 Заказ картриджей":
+
+            summary += f"Картридж: {user_data[chat_id]['cartridge']}\nКоличество: {user_data[chat_id]['quantity']}\n"
+
+        else:
+
+            summary += f"Оборудование: {user_data[chat_id]['equipment']}\nПроблема: {user_data[chat_id]['problem']}\n"
+
+        
+
+        summary += f"Подразделение: {user_data[chat_id]['branch']}\n"
+
+        summary += f"Пользователь: @{bot.get_chat(chat_id).username or bot.get_chat(chat_id).first_name}"
+
+        
+
+        # Сохраняем заявку в файл
+
+        save_request_to_file(summary, status='new', req_id=rid)
+
+        
+
+        # Отправляем подтверждение пользователю
+
+        bot.send_message(chat_id, "✅ Заявка успешно отправлена!")
+
+        
+
+        # Отправляем заявку администратору
+
+        bot.send_message(ADMIN_ID, summary, parse_mode='Markdown')
+
+        
+
+        # Логируем заявку
+
+        logging.info(f"Новая заявка {rid} от пользователя {chat_id}")
+
+        
+
+    except Exception as e:
+
+        logging.error(f"Ошибка при отправке заявки: {e}")
+
+        bot.send_message(chat_id, "❌ Произошла ошибка при отправке заявки. Попробуйте еще раз.")
+
+    finally:
+
+        # Очищаем данные пользователя и возвращаемся к началу
+
+        clear_user_data(chat_id)
+
+        start_flow(chat_id)
+
+
+
+def update_request_status(req_id, new_status):
+
+    """Обновляет статус заявки в requests.txt и requests.csv"""
+
+    updated = False
+
+    # Обновляем в текстовом файле
+
+    if os.path.exists('requests.txt'):
+
+        with open('requests.txt', 'r', encoding='utf-8') as f:
+
+            lines = f.readlines()
+
+        with open('requests.txt', 'w', encoding='utf-8') as f:
+
+            i = 0
+
+            while i < len(lines):
+
+                if req_id in lines[i]:
+
+                    # Найдено начало заявки
+
+                    while i < len(lines) and not lines[i].startswith('Статус:'):
+
+                        f.write(lines[i])
+
+                        i += 1
+
+                    if i < len(lines) and lines[i].startswith('Статус:'):
+
+                        f.write(f'Статус: {new_status}\n')
+
+                        updated = True
+
+                        i += 1
+
+                    else:
+
+                        f.write(f'Статус: {new_status}\n')
+
+                    # Копируем до разделителя
+
+                    while i < len(lines) and not lines[i].startswith('='):
+
+                        f.write(lines[i])
+
+                        i += 1
+
+                else:
+
+                    f.write(lines[i])
+
+                    i += 1
+
+    # Обновляем в CSV
+
+    if os.path.exists('requests.csv'):
+
+        with open('requests.csv', 'r', encoding='utf-8') as f:
+
+            rows = list(csv.reader(f))
+
+        with open('requests.csv', 'w', encoding='utf-8', newline='') as f:
+
+            writer = csv.writer(f)
+
+            for row in rows:
+
+                if row and row[0] == req_id:
+
+                    row[1] = new_status
+
+                    updated = True
+
+                writer.writerow(row)
+
+    return updated
+
+
+
+def notify_user_about_status(req_id, new_status):
+
+    """Уведомляет пользователя о смене статуса заявки"""
+
+    if os.path.exists('requests.txt'):
+
+        with open('requests.txt', 'r', encoding='utf-8') as f:
+
+            lines = f.readlines()
+
+        user_id = None
+
+        found = False
+
+        req = []
+
+        for line in lines:
+
+            if req_id in line:
+
+                found = True
+
+                req = [line]
+
+            elif found and line.startswith('Пользователь:'):
+
+                # Извлекаем ID пользователя (если есть)
+
+                if '@' in line:
+
+                    # username
+
+                    user_id = line.split('@',1)[1].strip()
+
+                else:
+
+                    # возможно, имя или id
+
+                    user_id = line.split(':',1)[1].strip()
+
+                break
+
+            elif found:
+
+                req.append(line)
+
+        if user_id:
+
+            # Пробуем отправить уведомление (по username или id)
+
+            try:
+
+                msg = f'🔔 Статус вашей заявки {req_id} изменён на: {new_status}'
+
+                # Если user_id — это число, значит id
+
+                if user_id.isdigit():
+
+                    bot.send_message(int(user_id), msg)
+
+                else:
+
+                    bot.send_message(f'@{user_id}', msg)
+
+            except Exception as e:
+
+                logging.error(f'Не удалось уведомить пользователя {user_id}: {e}')
+
+
+
+@bot.message_handler(commands=['start'])
+
+def cmd_start(m):
+
+    """Обработчик команды /start"""
+
+    bot.send_message(m.chat.id, "🤖 Бот для заявок на ремонт и заказ картриджей\n\nВыберите тип заявки:")
+
+    start_flow(m.chat.id)
+
+
+
+@bot.message_handler(commands=['status'])
+
+def cmd_status(m):
+
+    """Обработчик команды /status"""
+
+    status = "🟢 Запущен" if bot_running else "🔴 Не запущен"
+
+    bot.send_message(m.chat.id, f"Статус бота: {status}")
+
+
+
+@bot.message_handler(commands=['help'])
+
+def cmd_help(m):
+
+    """Обработчик команды /help"""
+
+    help_text = """
+
+🤖 *Помощь по боту*
+
+
+
+*Команды:*
+
+/start - Начать создание заявки
+
+/status - Проверить статус бота
+
+/help - Показать эту справку
+
+
+
+*Типы заявок:*
+
+📦 Заказ картриджей - для заказа расходных материалов
+
+🔧 Ремонт оборудования - для заявок на ремонт техники
+
+
+
+*Как использовать:*
+
+1. Нажмите /start
+
+2. Выберите тип заявки
+
+3. Следуйте инструкциям бота
+
+4. Подтвердите отправку заявки
+
+    """
+
+    bot.send_message(m.chat.id, help_text, parse_mode='Markdown')
+
+
+
+@bot.message_handler(commands=['admin'])
+
+def cmd_admin(m):
+
+    """Обработчик команды /admin - меню администратора"""
+
+    if m.chat.id != ADMIN_ID:
+
+        bot.send_message(m.chat.id, "⛔ У вас нет доступа к административным функциям.")
+
+        return
+
+    
+
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+
+    markup.add("📊 Статистика", "👥 Активные пользователи")
+
+    markup.add("🔄 Сбросить счетчик", "📋 Последние заявки")
+
+    markup.add("💾 Резервная копия", "📝 Логи")
+
+    markup.add("🧹 Очистить данные", "❌ Закрыть меню")
+
+    markup.add("📤 Экспорт заявок")
+
+    
+
+    bot.send_message(m.chat.id, "🔧 *Меню администратора*\n\nВыберите действие:", 
+
+                    reply_markup=markup, parse_mode='Markdown')
+
+
+
+@bot.message_handler(commands=['stats'])
+
+def cmd_stats(m):
+
+    """Обработчик команды /stats - статистика"""
+
+    if m.chat.id != ADMIN_ID:
+
+        return
+
+    
+
+    try:
+
+        # Читаем счетчик заявок
+
+        counter_file = "counter.txt"
+
+        if os.path.exists(counter_file):
+
+            with open(counter_file, "r") as f:
+
+                total_requests = int(f.read())
+
+        else:
+
+            total_requests = 0
+
+        
+
+        # Подсчитываем активных пользователей
+
+        active_users = len(user_data)
+
+        
+
+        # Получаем размер лог файла
+
+        log_size = 0
+
+        if os.path.exists('bot.log'):
+
+            log_size = os.path.getsize('bot.log')
+
+        
+
+        stats_text = f"""
+
+📊 *Статистика бота*
+
+
+
+📈 **Всего заявок:** {total_requests}
+
+👥 **Активных пользователей:** {active_users}
+
+📝 **Размер лог файла:** {log_size} байт
+
+🕒 **Время работы:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+🟢 **Статус:** {'Работает' if bot_running else 'Остановлен'}
+
+        """
+
+        
+
+        bot.send_message(m.chat.id, stats_text, parse_mode='Markdown')
+
+        
+
+    except Exception as e:
+
+        bot.send_message(m.chat.id, f"❌ Ошибка при получении статистики: {e}")
+
+
+
+@bot.message_handler(commands=['reset'])
+
+def cmd_reset(m):
+
+    """Обработчик команды /reset - сброс счетчика заявок"""
+
+    if m.chat.id != ADMIN_ID:
+
+        return
+
+    
+
+    try:
+
+        counter_file = "counter.txt"
+
+        if os.path.exists(counter_file):
+
+            with open(counter_file, "w") as f:
+
+                f.write("1")
+
+            bot.send_message(m.chat.id, "✅ Счетчик заявок сброшен. Следующая заявка будет REQ-0001")
+
+        else:
+
+            bot.send_message(m.chat.id, "ℹ️ Счетчик заявок еще не создан")
+
+    except Exception as e:
+
+        bot.send_message(m.chat.id, f"❌ Ошибка при сбросе счетчика: {e}")
+
+
+
+@bot.message_handler(commands=['users'])
+
+def cmd_users(m):
+
+    """Обработчик команды /users - список активных пользователей"""
+
+    if m.chat.id != ADMIN_ID:
+
+        return
+
+    
+
+    if not user_data:
+
+        bot.send_message(m.chat.id, "👥 Нет активных пользователей")
+
+        return
+
+    
+
+    users_text = "👥 *Активные пользователи:*\n\n"
+
+    for chat_id, data in user_data.items():
+
+        step = data.get('step', 'неизвестно')
+
+        users_text += f"• ID: {chat_id}\n  Шаг: {step}\n\n"
+
+    
+
+    bot.send_message(m.chat.id, users_text, parse_mode='Markdown')
+
+
+
+@bot.message_handler(commands=['clear'])
+
+def cmd_clear(m):
+
+    """Обработчик команды /clear - очистка данных пользователей"""
+
+    if m.chat.id != ADMIN_ID:
+
+        return
+
+    
+
+    global user_data
+
+    count = len(user_data)
+
+    user_data.clear()
+
+    bot.send_message(m.chat.id, f"🧹 Очищены данные {count} пользователей")
+
+
+
+@bot.message_handler(commands=['logs'])
+
+def cmd_logs(m):
+
+    """Обработчик команды /logs - последние записи лога"""
+
+    if m.chat.id != ADMIN_ID:
+
+        return
+
+    
+
+    try:
+
+        if os.path.exists('bot.log'):
+
+            with open('bot.log', 'r', encoding='utf-8') as f:
+
+                lines = f.readlines()
+
+                last_lines = lines[-10:] if len(lines) > 10 else lines
+
+                log_text = "📝 *Последние записи лога:*\n\n"
+
+                for line in last_lines:
+
+                    log_text += f"`{line.strip()}`\n"
+
+                bot.send_message(m.chat.id, log_text, parse_mode='Markdown')
+
+        else:
+
+            bot.send_message(m.chat.id, "📝 Лог файл не найден")
+
+    except Exception as e:
+
+        bot.send_message(m.chat.id, f"❌ Ошибка при чтении лога: {e}")
+
+
+
+@bot.message_handler(commands=['requests'])
+
+def cmd_requests(m):
+
+    """Обработчик команды /requests - последние заявки"""
+
+    if m.chat.id != ADMIN_ID:
+
+        return
+
+    
+
+    try:
+
+        if os.path.exists('requests.txt'):
+
+            with open('requests.txt', 'r', encoding='utf-8') as f:
+
+                content = f.read()
+
+                if len(content) > 4000:  # Telegram ограничение на размер сообщения
+
+                    content = content[-4000:] + "\n\n... (показаны последние записи)"
+
+                
+
+                requests_text = "📋 *Последние заявки:*\n\n"
+
+                requests_text += f"```\n{content}\n```"
+
+                bot.send_message(m.chat.id, requests_text, parse_mode='Markdown')
+
+        else:
+
+            bot.send_message(m.chat.id, "📋 Файл с заявками не найден")
+
+    except Exception as e:
+
+        bot.send_message(m.chat.id, f"❌ Ошибка при чтении заявок: {e}")
+
+
+
+@bot.message_handler(commands=['backup'])
+
+def cmd_backup(m):
+
+    """Обработчик команды /backup - создание резервной копии"""
+
+    if m.chat.id != ADMIN_ID:
+
+        return
+
+    
+
+    try:
+
+        backup_data = {
+
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+
+            'total_requests': 0,
+
+            'active_users': len(user_data),
+
+            'bot_status': bot_running
+
+        }
+
+        
+
+        # Читаем счетчик заявок
+
+        counter_file = "counter.txt"
+
+        if os.path.exists(counter_file):
+
+            with open(counter_file, "r") as f:
+
+                backup_data['total_requests'] = int(f.read())
+
+        
+
+        backup_text = f"""
+
+💾 *Резервная копия данных*
+
+
+
+📅 **Дата:** {backup_data['timestamp']}
+
+📈 **Всего заявок:** {backup_data['total_requests']}
+
+👥 **Активных пользователей:** {backup_data['active_users']}
+
+🟢 **Статус бота:** {'Работает' if backup_data['bot_status'] else 'Остановлен'}
+
+        """
+
+        
+
+        bot.send_message(m.chat.id, backup_text, parse_mode='Markdown')
+
+        
+
+    except Exception as e:
+
+        bot.send_message(m.chat.id, f"❌ Ошибка при создании резервной копии: {e}")
+
+
+
+@bot.message_handler(commands=['export'])
+
+def cmd_export(m):
+
+    """Экспорт всех заявок в CSV (админ)"""
+
+    if m.chat.id != ADMIN_ID:
+
+        return
+
+    if os.path.exists('requests.csv'):
+
+        with open('requests.csv', 'rb') as f:
+
+            bot.send_document(m.chat.id, f, caption='Экспорт заявок (CSV)')
+
+    else:
+
+        bot.send_message(m.chat.id, 'Файл requests.csv не найден.')
+
+
+
+@bot.message_handler(commands=['export_excel'])
+
+def cmd_export_excel(m):
+
+    """Экспорт всех заявок в Excel (админ)"""
+
+    if m.chat.id != ADMIN_ID:
+
+        return
+
+    if os.path.exists('requests.xlsx'):
+
+        with open('requests.xlsx', 'rb') as f:
+
+            bot.send_document(m.chat.id, f, caption='Экспорт заявок (Excel)')
+
+    else:
+
+        bot.send_message(m.chat.id, 'Файл requests.xlsx не найден.')
+
+
+
+@bot.message_handler(commands=['setstatus'])
+
+def cmd_setstatus(m):
+
+    """Изменение статуса заявки: /setstatus REQ-0001 done"""
+
+    if m.chat.id != ADMIN_ID:
+
+        return
+
+    try:
+
+        parts = m.text.strip().split()
+
+        if len(parts) != 3:
+
+            bot.send_message(m.chat.id, 'Используйте: /setstatus REQ-0001 done')
+
+            return
+
+        _, req_id, new_status = parts
+
+        if update_request_status(req_id, new_status):
+
+            bot.send_message(m.chat.id, f'Статус заявки {req_id} изменен на {new_status}')
+
+            notify_user_about_status(req_id, new_status)
+
+        else:
+
+            bot.send_message(m.chat.id, f'Заявка {req_id} не найдена.')
+
+    except Exception as e:
+
+        bot.send_message(m.chat.id, f'Ошибка: {e}')
+
+
+
+@bot.message_handler(commands=['myrequests'])
+
+def cmd_myrequests(m):
+
+    """Показывает пользователю его последние заявки и статусы с кнопкой 'Повторить заявку'"""
+
+    user = m.from_user.username or m.from_user.full_name or str(m.from_user.id)
+
+    found = []
+
+    req_ids = []
+
+    req_blocks = []
+
+    if os.path.exists('requests.txt'):
+
+        with open('requests.txt', 'r', encoding='utf-8') as f:
+
+            lines = f.readlines()
+
+        req = []
+
+        req_id = None
+
+        for line in lines:
+
+            if line.startswith('✉️'):
+
+                req = [line]
+
+                req_id = None
+
+                if 'Заявка' in line:
+
+                    req_id = line.split('Заявка')[1].split('*')[0].strip()
+
+            elif line.startswith('Пользователь:') and user in line:
+
+                req.append(line)
+
+                # Ищем статус
+
+                status = 'Неизвестно'
+
+                for l in req:
+
+                    if l.startswith('Статус:'):
+
+                        status = l.split(':',1)[1].strip()
+
+                found.append({'text': ''.join(req) + f'Статус: {status}\n', 'req_id': req_id})
+
+                req_blocks.append(list(req))
+
+                req_ids.append(req_id)
+
+            elif req:
+
+                req.append(line)
+
+    if found:
+
+        for i, item in enumerate(found[-5:]):
+
+            msg = f'Ваша заявка:\n\n{item["text"]}'
+
+            markup = InlineKeyboardMarkup()
+
+            if item['req_id']:
+
+                markup.add(InlineKeyboardButton('🔁 Повторить заявку', callback_data=f'repeat_{item["req_id"]}'))
+
+            bot.send_message(m.chat.id, msg, reply_markup=markup)
+
+    else:
+
+        bot.send_message(m.chat.id, 'У вас пока нет заявок.')
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('repeat_'))
+
+def handle_repeat_request(call: CallbackQuery):
+
+    """Обрабатывает повтор заявки по кнопке"""
+
+    req_id = call.data.split('_',1)[1]
+
+    # Найти заявку по req_id
+
+    if os.path.exists('requests.txt'):
+
+        with open('requests.txt', 'r', encoding='utf-8') as f:
+
+            lines = f.readlines()
+
+        req = []
+
+        found = False
+
+        for line in lines:
+
+            if req_id in line:
+
+                found = True
+
+                req = [line]
+
+            elif found and line.startswith('✉️'):
+
+                break
+
+            elif found:
+
+                req.append(line)
+
+        # Парсим поля
+
+        data = {}
+
+        for l in req:
+
+            if l.startswith('Тип:'):
+
+                data['type'] = l.split(':',1)[1].strip()
+
+            elif l.startswith('Картридж:'):
+
+                data['cartridge'] = l.split(':',1)[1].strip()
+
+            elif l.startswith('Количество:'):
+
+                data['quantity'] = l.split(':',1)[1].strip()
+
+            elif l.startswith('Оборудование:'):
+
+                data['equipment'] = l.split(':',1)[1].strip()
+
+            elif l.startswith('Проблема:'):
+
+                data['problem'] = l.split(':',1)[1].strip()
+
+            elif l.startswith('Подразделение:'):
+
+                data['branch'] = l.split(':',1)[1].strip()
+
+        # Запускаем новый флоу с этими данными
+
+        chat_id = call.message.chat.id
+
+        user_data[chat_id] = {}
+
+        if data.get('type') == '📦 Заказ картриджей':
+
+            user_data[chat_id]['type'] = data['type']
+
+            user_data[chat_id]['cartridge'] = data.get('cartridge','')
+
+            user_data[chat_id]['quantity'] = data.get('quantity','')
+
+            start_flow(chat_id)
+
+            if data.get('cartridge'):
+
+                ask_cartridge_inline(chat_id)
+
+            if data.get('quantity'):
+
+                ask_quantity_inline(chat_id)
+
+        elif data.get('type') == '🔧 Ремонт оборудования':
+
+            user_data[chat_id]['type'] = data['type']
+
+            user_data[chat_id]['equipment'] = data.get('equipment','')
+
+            user_data[chat_id]['problem'] = data.get('problem','')
+
+            start_flow(chat_id)
+
+            if data.get('equipment'):
+
+                ask_equipment_inline(chat_id)
+
+            if data.get('problem'):
+
+                ask_problem_inline(chat_id)
+
+        # Если есть branch, сразу финализируем
+
+        if data.get('branch'):
+
+            user_data[chat_id]['branch'] = data['branch']
+
+            finalize_request(chat_id)
+
+        bot.answer_callback_query(call.id, 'Данные заявки скопированы! Можете изменить нужные поля.')
+
+
+
+@bot.message_handler(func=lambda m: True)
+
+def main_handler(m):
+
+    """Универсальный обработчик всех сообщений"""
+
+    chat_id = m.chat.id
+
+    text = m.text
+
+    
+
+    # Обработка административных команд
+
+    if chat_id == ADMIN_ID:
+
+        if text == "📊 Статистика":
+
+            cmd_stats(m)
+
+            return
+
+        elif text == "👥 Активные пользователи":
+
+            cmd_users(m)
+
+            return
+
+        elif text == "🔄 Сбросить счетчик":
+
+            cmd_reset(m)
+
+            return
+
+        elif text == "📋 Последние заявки":
+
+            cmd_requests(m)
+
+            return
+
+        elif text == "💾 Резервная копия":
+
+            cmd_backup(m)
+
+            return
+
+        elif text == "📝 Логи":
+
+            cmd_logs(m)
+
+            return
+
+        elif text == "🧹 Очистить данные":
+
+            cmd_clear(m)
+
+            return
+
+        elif text == "❌ Закрыть меню":
+
+            markup = types.ReplyKeyboardRemove()
+
+            bot.send_message(chat_id, "🔧 Меню администратора закрыто", reply_markup=markup)
+
+            return
+
+        elif text == "📤 Экспорт заявок":
+
+            export_format_markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+
+            export_format_markup.add("Excel (.xlsx)", "CSV (.csv)")
+
+            export_format_markup.add("❌ Отмена")
+
+            bot.send_message(chat_id, "Выберите формат экспорта:", reply_markup=export_format_markup)
+
+            user_data[chat_id]["step"] = "export_format"
+
+            return
+
+        elif text == "📥 Экспорт в Excel":
+
+            cmd_export_excel(m)
+
+            start_flow(chat_id)
+
+            return
+
+        elif text == "📝 Изменить статус":
+
+            bot.send_message(chat_id, 'Используйте команду: /setstatus REQ-0001 done')
+
+            return
+
+    
+
+    # Обработка отмены
+
+    if text == "❌ Отмена":
+
+        start_flow(chat_id)
+
+        return
+
+    
+
+    # Если пользователь не в процессе создания заявки
+
+    if chat_id not in user_data or "step" not in user_data[chat_id]:
+
+        start_flow(chat_id)
+
+        return
+
+    
+
+    step = user_data[chat_id]["step"]
+
+    
+
+    # Обработка в зависимости от текущего шага
+
+    if step == "start":
+
+        if text == "📦 Заказ картриджей":
+
+            user_data[chat_id]["type"] = text
+
+            ask_cartridge_inline(chat_id)
+
+        elif text == "🔧 Ремонт оборудования":
+
+            user_data[chat_id]["type"] = text
+
+            ask_equipment_inline(chat_id)
+
+        else:
+
+            bot.send_message(chat_id, "Пожалуйста, выберите тип заявки кнопкой.")
+
+            start_flow(chat_id)
+
+    
+
+    elif step == "cartridge":
+
+        if text in CARTRIDGES:
+
+            user_data[chat_id]["cartridge"] = text
+
+            ask_quantity_inline(chat_id)
+
+        else:
+
+            bot.send_message(chat_id, "Пожалуйста, выберите картридж кнопкой.")
+
+            ask_cartridge_inline(chat_id)
+
+    
+
+    elif step == "quantity":
+
+        if text in QUANTITIES:
+
+            user_data[chat_id]["quantity"] = text
+
+            ask_city_inline(chat_id)
+
+        else:
+
+            bot.send_message(chat_id, "Пожалуйста, выберите количество кнопкой.")
+
+            ask_quantity_inline(chat_id)
+
+    
+
+    elif step == "equipment":
+
+        if text in EQUIP_PROBLEMS:
+
+            user_data[chat_id]["equipment"] = text
+
+            ask_problem_inline(chat_id)
+
+        else:
+
+            bot.send_message(chat_id, "Пожалуйста, выберите оборудование кнопкой.")
+
+            ask_equipment_inline(chat_id)
+
+    
+
+    elif step == "problem":
+
+        if text == "Другая проблема":
+
+            ask_custom_problem_inline(chat_id)
+
+        elif text in EQUIP_PROBLEMS.get(user_data[chat_id]['equipment'], []):
+
+            user_data[chat_id]["problem"] = text
+
+            ask_city_inline(chat_id)
+
+        else:
+
+            bot.send_message(chat_id, "Пожалуйста, выберите проблему кнопкой.")
+
+            ask_problem_inline(chat_id)
+
+    
+
+    elif step == "custom_problem":
+
+        user_data[chat_id]["problem"] = text
+
+        ask_city_inline(chat_id)
+
+    
+
+    elif step == "city":
+
+        if text in CITIES:
+
+            if CITIES[text]:  # Если есть подразделения
+
+                user_data[chat_id]["city"] = text
+
+                ask_subbranch(chat_id, text)
+
+            else:  # Если нет подразделений
+
+                user_data[chat_id]["branch"] = text
+
+                finalize_request(chat_id)
+
+        else:
+
+            bot.send_message(chat_id, "Пожалуйста, выберите город кнопкой.")
+
+            ask_city_inline(chat_id)
+
+    
+
+    elif step == "subbranch":
+
+        if text in sum(CITIES.values(), []):
+
+            user_data[chat_id]["branch"] = text
+
+            finalize_request(chat_id)
+
+        else:
+
+            bot.send_message(chat_id, "Пожалуйста, выберите подразделение кнопкой.")
+
+            ask_subbranch(chat_id, user_data[chat_id]["city"])
+
+    
+
+    elif step == "export_format":
+
+        if text == "Excel (.xlsx)":
+
+            cmd_export_excel(m)
+
+            start_flow(chat_id)
+
+            return
+
+        elif text == "CSV (.csv)":
+
+            cmd_export(m)
+
+            start_flow(chat_id)
+
+            return
+
+        else:
+
+            bot.send_message(chat_id, "Пожалуйста, выберите формат кнопкой.")
+
+            return
+
+    
+
+    else:
+
+        # Неизвестный шаг - начинаем заново
+
+        bot.send_message(chat_id, "Произошла ошибка. Начинаем заново.")
+
+        start_flow(chat_id)
+
+
+
+def run_bot():
+
+    """Основная функция запуска бота"""
+
+    global bot_running
+
+    bot_running = True
+
+    print("🟢 Бот запущен")
+
+    logging.info("Бот запущен")
+
+    
+
+    try:
+
+        bot.infinity_polling(timeout=60, long_polling_timeout=30, logger_level=logging.INFO)
+
+    except KeyboardInterrupt:
+
+        bot_running = False
+
+        print("🔴 Бот остановлен пользователем")
+
+        logging.info("Бот остановлен пользователем")
+
+    except Exception as e:
+
+        bot_running = False
+
+        print(f"❗ Ошибка polling: {e}")
+
+        logging.error(f"Ошибка polling: {e}")
+
+    finally:
+
+        bot_running = False
+
+        print("ℹ️ Бот завершил работу")
+
+        logging.info("Бот завершил работу")
+
+
+
+if __name__ == '__main__':
+
+    run_bot() 
