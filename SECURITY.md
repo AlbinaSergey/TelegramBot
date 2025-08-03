@@ -7,6 +7,7 @@
 Свяжитесь с нами напрямую:
 - 🆔 Telegram ID: 541707424
 - 🔗 Telegram username: @SergeyPisarenko
+- 📩 ib@burosme.ru
 
 ---
 
