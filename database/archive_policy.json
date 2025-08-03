@@ -1,0 +1,54 @@
+{
+  "description": "Политика архивирования данных HelpDesk системы",
+  "version": "1.0",
+  "rules": {
+    "requests": {
+      "archive_after_days": 365,
+      "delete_after_days": 2555,
+      "conditions": {
+        "status": ["done", "cancelled"],
+        "completed_before": "2 years ago"
+      },
+      "preserve_conditions": {
+        "priority": ["high"],
+        "has_complaints": true
+      }
+    },
+    "logs": {
+      "archive_after_days": 180,
+      "delete_after_days": 1095,
+      "conditions": {
+        "older_than": "6 months"
+      }
+    },
+    "one_c_snapshot": {
+      "archive_after_days": 90,
+      "delete_after_days": 365,
+      "conditions": {
+        "request_completed": true,
+        "older_than": "3 months"
+      }
+    },
+    "stock_items": {
+      "archive_never": true,
+      "description": "Остатки склада не архивируются, только обновляются"
+    }
+  },
+  "backup": {
+    "daily_retention_days": 30,
+    "weekly_retention_weeks": 12,
+    "monthly_retention_months": 24,
+    "yearly_retention_years": 7
+  },
+  "archive_table_suffix": "_archived",
+  "compression": {
+    "enabled": true,
+    "algorithm": "gzip",
+    "level": 6
+  },
+  "monitoring": {
+    "notify_on_archive": true,
+    "notify_on_delete": true,
+    "log_actions": true
+  }
+}
